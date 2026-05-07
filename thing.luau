@@ -5,13 +5,13 @@ local StarterGui = game:GetService("StarterGui")
 local plr = Players.LocalPlayer
 local pg = plr:WaitForChild("PlayerGui")
 
-local old = pg:FindFirstChild("FOCUSED_EMOTE_PROBE")
+local old = pg:FindFirstChild("STRICT_EMOTE_PROBE")
 if old then
 	old:Destroy()
 end
 
 local g = Instance.new("ScreenGui")
-g.Name = "FOCUSED_EMOTE_PROBE"
+g.Name = "STRICT_EMOTE_PROBE"
 g.ResetOnSpawn = false
 g.Parent = pg
 
@@ -27,7 +27,7 @@ top.Parent = f
 top.Size = UDim2.new(1, 0, 0, 28)
 top.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 top.BorderSizePixel = 0
-top.Text = "FOCUSED ANIMATION PROBE - DRAG"
+top.Text = "STRICT ANIMATION PROBE - DRAG"
 top.Font = Enum.Font.Code
 top.TextSize = 16
 top.TextColor3 = Color3.new(1, 1, 1)
@@ -112,34 +112,16 @@ local DEFAULT_IDS = {
 	["rbxassetid://507771955"] = true,
 	["rbxassetid://507772104"] = true,
 	["rbxassetid://507776043"] = true,
+	["rbxassetid://0"] = true,
 }
-
-local RELATED_NAME_HINTS = {
-	"clone",
-	"partner",
-	"stand",
-	"pet",
-	"buddy",
-	"companion",
-	"effect",
-	"emote",
-	"dance",
-	"prop",
-	"mount",
-	"vehicle",
-}
-
-local MAX_RELATED_DISTANCE = 35
 
 local function normalizeId(id: string): string
-	id = tostring(id)
-
-	local numeric = string.match(id, "%d+")
+	local numeric = string.match(tostring(id), "%d+")
 	if numeric then
 		return "rbxassetid://" .. numeric
 	end
 
-	return string.lower(id)
+	return string.lower(tostring(id))
 end
 
 local function isDefaultTrack(track: AnimationTrack): boolean
@@ -164,13 +146,22 @@ local function isDefaultTrack(track: AnimationTrack): boolean
 	return false
 end
 
-local function getCharacterRoot(): BasePart?
-	local char = plr.Character
+local function getCharacter(): Model?
+	return plr.Character
+end
+
+local function getMainAnimator(): Animator?
+	local char = getCharacter()
 	if not char then
 		return nil
 	end
 
-	return char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		return nil
+	end
+
+	return humanoid:FindFirstChildOfClass("Animator")
 end
 
 local function getModel(inst: Instance): Model?
@@ -186,29 +177,30 @@ local function getLabel(inst: Instance): string
 	return inst:GetFullName()
 end
 
-local function belongsToAnyOtherPlayer(model: Model?): boolean
+local function isPlayerCharacterModel(model: Model?): boolean
 	if not model then
 		return false
 	end
 
-	local owner = Players:GetPlayerFromCharacter(model)
-	return owner ~= nil and owner ~= plr
+	if Players:GetPlayerFromCharacter(model) then
+		return true
+	end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if model.Name == player.Name or model.Name == player.DisplayName then
+			return true
+		end
+	end
+
+	return false
 end
 
-local function nameLooksRelated(inst: Instance): boolean
+local function isInsideAnyPlayerCharacter(inst: Instance): boolean
 	local node: Instance? = inst
 
 	while node and node ~= workspace do
-		local lowerName = string.lower(node.Name)
-
-		if string.find(lowerName, string.lower(plr.Name), 1, true) or string.find(lowerName, string.lower(plr.DisplayName), 1, true) then
+		if node:IsA("Model") and isPlayerCharacterModel(node) then
 			return true
-		end
-
-		for _, hint in ipairs(RELATED_NAME_HINTS) do
-			if string.find(lowerName, hint, 1, true) then
-				return true
-			end
 		end
 
 		node = node.Parent
@@ -217,61 +209,99 @@ local function nameLooksRelated(inst: Instance): boolean
 	return false
 end
 
-local function modelHasMotorLinkedToCharacter(model: Model?): boolean
-	local char = plr.Character
-	if not char or not model then
+local function getPartFromJointSide(value: any): BasePart?
+	if typeof(value) == "Instance" and value:IsA("BasePart") then
+		return value
+	end
+
+	return nil
+end
+
+local function jointLinksModelToCharacter(joint: Instance, model: Model, char: Model): boolean
+	if not (joint:IsA("Motor6D") or joint:IsA("Weld") or joint:IsA("WeldConstraint")) then
+		return false
+	end
+
+	local part0 = getPartFromJointSide((joint :: any).Part0)
+	local part1 = getPartFromJointSide((joint :: any).Part1)
+
+	if not part0 or not part1 then
+		return false
+	end
+
+	local p0InChar = part0:IsDescendantOf(char)
+	local p1InChar = part1:IsDescendantOf(char)
+	local p0InModel = part0:IsDescendantOf(model)
+	local p1InModel = part1:IsDescendantOf(model)
+
+	return (p0InChar and p1InModel) or (p1InChar and p0InModel)
+end
+
+local function modelIsJointLinkedToCharacter(model: Model?): boolean
+	local char = getCharacter()
+	if not char or not model or model == char then
 		return false
 	end
 
 	for _, inst in ipairs(model:GetDescendants()) do
-		if inst:IsA("Motor6D") or inst:IsA("Weld") or inst:IsA("WeldConstraint") then
-			local part0 = inst.Part0
-			local part1 = inst.Part1
+		if jointLinksModelToCharacter(inst, model, char) then
+			return true
+		end
+	end
 
-			if part0 and part0:IsDescendantOf(char) then
-				return true
-			end
-
-			if part1 and part1:IsDescendantOf(char) then
-				return true
-			end
+	for _, inst in ipairs(char:GetDescendants()) do
+		if jointLinksModelToCharacter(inst, model, char) then
+			return true
 		end
 	end
 
 	return false
 end
 
-local function modelIsNearCharacter(model: Model?): boolean
-	local root = getCharacterRoot()
-	if not root or not model then
-		return false
+local function hasLocalOwnerHint(inst: Instance): boolean
+	local localName = string.lower(plr.Name)
+	local displayName = string.lower(plr.DisplayName)
+	local userId = tostring(plr.UserId)
+
+	local node: Instance? = inst
+	while node and node ~= workspace do
+		local name = string.lower(node.Name)
+
+		if string.find(name, localName, 1, true) or string.find(name, displayName, 1, true) then
+			return true
+		end
+
+		local owner = node:GetAttribute("Owner") or node:GetAttribute("OwnerName") or node:GetAttribute("PlayerName")
+		if typeof(owner) == "string" and string.lower(owner) == localName then
+			return true
+		end
+
+		local ownerId = node:GetAttribute("OwnerId") or node:GetAttribute("UserId") or node:GetAttribute("PlayerUserId")
+		if ownerId ~= nil and tostring(ownerId) == userId then
+			return true
+		end
+
+		node = node.Parent
 	end
 
-	local pivot = model:GetPivot()
-	return (pivot.Position - root.Position).Magnitude <= MAX_RELATED_DISTANCE
+	return false
 end
 
-local function isRelatedAnimator(animator: Animator): boolean
-	local model = getModel(animator)
-
-	if belongsToAnyOtherPlayer(model) then
+local function shouldIncludeExtraAnimator(animator: Animator): boolean
+	if isInsideAnyPlayerCharacter(animator) then
 		return false
 	end
 
-	local char = plr.Character
-	if char and animator:IsDescendantOf(char) then
+	local model = getModel(animator)
+	if not model then
+		return false
+	end
+
+	if modelIsJointLinkedToCharacter(model) then
 		return true
 	end
 
-	if modelHasMotorLinkedToCharacter(model) then
-		return true
-	end
-
-	if nameLooksRelated(animator) then
-		return true
-	end
-
-	if modelIsNearCharacter(model) then
+	if hasLocalOwnerHint(animator) then
 		return true
 	end
 
@@ -282,8 +312,18 @@ local function collectAnimators(): {{ label: string, animator: Animator }}
 	local found: {{ label: string, animator: Animator }} = {}
 	local seen: {[Animator]: boolean} = {}
 
+	local mainAnimator = getMainAnimator()
+	if mainAnimator then
+		seen[mainAnimator] = true
+
+		table.insert(found, {
+			label = "PLAYER",
+			animator = mainAnimator,
+		})
+	end
+
 	for _, inst in ipairs(workspace:GetDescendants()) do
-		if inst:IsA("Animator") and not seen[inst] and isRelatedAnimator(inst) then
+		if inst:IsA("Animator") and not seen[inst] and shouldIncludeExtraAnimator(inst) then
 			seen[inst] = true
 
 			table.insert(found, {
@@ -305,16 +345,13 @@ local function getPlayingRows(): {string}
 				local anim = track.Animation
 				local animId = anim and normalizeId(anim.AnimationId or "") or ""
 
-				if animId ~= "" then
-					local row = string.format(
+				if animId ~= "" and animId ~= "rbxassetid://0" then
+					table.insert(rows, string.format(
 						"[%s]\n%s | %s",
 						info.label,
 						animId,
 						track.Name or "track"
-					)
-
-					table.insert(rows, row)
-					print("focused animation probe", row)
+					))
 				end
 			end
 		end
@@ -327,9 +364,9 @@ local function refresh()
 	local rows = getPlayingRows()
 
 	if #rows == 0 then
-		txt.Text = "No related non-default animations playing.\n\nPlay an emote/dance/ability now."
+		txt.Text = "No owned/joint-linked non-default animations playing.\n\nPlay an emote/dance/ability now."
 	else
-		txt.Text = "RELATED NON-DEFAULT ANIMATIONS:\n\n" .. table.concat(rows, "\n\n")
+		txt.Text = "OWNED / LINKED NON-DEFAULT ANIMATIONS:\n\n" .. table.concat(rows, "\n\n")
 	end
 end
 
@@ -340,7 +377,7 @@ end)
 
 pcall(function()
 	StarterGui:SetCore("SendNotification", {
-		Title = "Focused Animation Probe",
+		Title = "Strict Animation Probe",
 		Text = "Play an emote now",
 		Duration = 4,
 	})
