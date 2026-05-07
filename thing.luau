@@ -1,6 +1,3 @@
-Yep, makes sense. The last one scanned **every Animator in Workspace**, so it caught other players too. This version ignores other players’ characters, keeps your own character, and only includes nearby/non-player objects that look related to you through ownership/name/proximity.
-
-```lua
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local StarterGui = game:GetService("StarterGui")
