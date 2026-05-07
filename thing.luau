@@ -5,20 +5,20 @@ local StarterGui = game:GetService("StarterGui")
 local plr = Players.LocalPlayer
 local pg = plr:WaitForChild("PlayerGui")
 
-local old = pg:FindFirstChild("STRICT_EMOTE_PROBE")
+local old = pg:FindFirstChild("DEEP_EMOTE_PROP_PROBE")
 if old then
 	old:Destroy()
 end
 
 local g = Instance.new("ScreenGui")
-g.Name = "STRICT_EMOTE_PROBE"
+g.Name = "DEEP_EMOTE_PROP_PROBE"
 g.ResetOnSpawn = false
 g.Parent = pg
 
 local f = Instance.new("Frame")
 f.Parent = g
-f.Size = UDim2.new(0, 560, 0, 280)
-f.Position = UDim2.new(1, -580, 0, 100)
+f.Size = UDim2.new(0, 600, 0, 320)
+f.Position = UDim2.new(1, -620, 0, 100)
 f.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 f.BorderSizePixel = 0
 
@@ -27,7 +27,7 @@ top.Parent = f
 top.Size = UDim2.new(1, 0, 0, 28)
 top.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 top.BorderSizePixel = 0
-top.Text = "STRICT ANIMATION PROBE - DRAG"
+top.Text = "DEEP EMOTE PROP PROBE - DRAG"
 top.Font = Enum.Font.Code
 top.TextSize = 16
 top.TextColor3 = Color3.new(1, 1, 1)
@@ -71,13 +71,7 @@ end)
 UserInputService.InputChanged:Connect(function(input)
 	if dragging and dragStart and startPos and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 		local d = input.Position - dragStart
-
-		f.Position = UDim2.new(
-			startPos.X.Scale,
-			startPos.X.Offset + d.X,
-			startPos.Y.Scale,
-			startPos.Y.Offset + d.Y
-		)
+		f.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
 	end
 end)
 
@@ -91,12 +85,16 @@ local DEFAULT_NAMES = {
 	swim = true,
 	sit = true,
 	toolnone = true,
+	toolslash = true,
+	toollunge = true,
 	animation1 = true,
 	animation2 = true,
 	animate = true,
+	swimidle = true,
 }
 
 local DEFAULT_IDS = {
+	["rbxassetid://0"] = true,
 	["rbxassetid://507766666"] = true,
 	["rbxassetid://507766951"] = true,
 	["rbxassetid://507766388"] = true,
@@ -112,8 +110,13 @@ local DEFAULT_IDS = {
 	["rbxassetid://507771955"] = true,
 	["rbxassetid://507772104"] = true,
 	["rbxassetid://507776043"] = true,
-	["rbxassetid://0"] = true,
 }
+
+local MAX_LOOSE_PROP_DISTANCE = 45
+local EMOTE_WINDOW_SECONDS = 2.25
+
+local firstSeenPlaying: {[string]: number} = {}
+local currentPlayerEmoteStart = 0
 
 local function normalizeId(id: string): string
 	local numeric = string.match(tostring(id), "%d+")
@@ -122,6 +125,12 @@ local function normalizeId(id: string): string
 	end
 
 	return string.lower(tostring(id))
+end
+
+local function getTrackKey(animator: Animator, track: AnimationTrack): string
+	local anim = track.Animation
+	local animId = anim and normalizeId(anim.AnimationId or "") or "noid"
+	return animator:GetDebugId(0) .. "|" .. animId .. "|" .. tostring(track.Name)
 end
 
 local function isDefaultTrack(track: AnimationTrack): boolean
@@ -137,8 +146,7 @@ local function isDefaultTrack(track: AnimationTrack): boolean
 			return true
 		end
 
-		local animId = normalizeId(anim.AnimationId or "")
-		if DEFAULT_IDS[animId] then
+		if DEFAULT_IDS[normalizeId(anim.AnimationId or "")] then
 			return true
 		end
 	end
@@ -195,12 +203,13 @@ local function isPlayerCharacterModel(model: Model?): boolean
 	return false
 end
 
-local function isInsideAnyPlayerCharacter(inst: Instance): boolean
+local function isInsideOtherPlayerCharacter(inst: Instance): boolean
+	local char = getCharacter()
 	local node: Instance? = inst
 
 	while node and node ~= workspace do
 		if node:IsA("Model") and isPlayerCharacterModel(node) then
-			return true
+			return node ~= char
 		end
 
 		node = node.Parent
@@ -209,7 +218,12 @@ local function isInsideAnyPlayerCharacter(inst: Instance): boolean
 	return false
 end
 
-local function getPartFromJointSide(value: any): BasePart?
+local function isInsideLocalCharacter(inst: Instance): boolean
+	local char = getCharacter()
+	return char ~= nil and inst:IsDescendantOf(char)
+end
+
+local function getPart(value: any): BasePart?
 	if typeof(value) == "Instance" and value:IsA("BasePart") then
 		return value
 	end
@@ -222,9 +236,8 @@ local function jointLinksModelToCharacter(joint: Instance, model: Model, char: M
 		return false
 	end
 
-	local part0 = getPartFromJointSide((joint :: any).Part0)
-	local part1 = getPartFromJointSide((joint :: any).Part1)
-
+	local part0 = getPart((joint :: any).Part0)
+	local part1 = getPart((joint :: any).Part1)
 	if not part0 or not part1 then
 		return false
 	end
@@ -237,20 +250,49 @@ local function jointLinksModelToCharacter(joint: Instance, model: Model, char: M
 	return (p0InChar and p1InModel) or (p1InChar and p0InModel)
 end
 
-local function modelIsJointLinkedToCharacter(model: Model?): boolean
+local function constraintLinksModelToCharacter(constraint: Instance, model: Model, char: Model): boolean
+	if not constraint:IsA("Constraint") then
+		return false
+	end
+
+	local attachment0 = (constraint :: Constraint).Attachment0
+	local attachment1 = (constraint :: Constraint).Attachment1
+	if not attachment0 or not attachment1 then
+		return false
+	end
+
+	local part0 = attachment0.Parent
+	local part1 = attachment1.Parent
+	if not (part0 and part0:IsA("BasePart") and part1 and part1:IsA("BasePart")) then
+		return false
+	end
+
+	local p0InChar = part0:IsDescendantOf(char)
+	local p1InChar = part1:IsDescendantOf(char)
+	local p0InModel = part0:IsDescendantOf(model)
+	local p1InModel = part1:IsDescendantOf(model)
+
+	return (p0InChar and p1InModel) or (p1InChar and p0InModel)
+end
+
+local function modelIsLinkedToCharacter(model: Model?): boolean
 	local char = getCharacter()
 	if not char or not model or model == char then
 		return false
 	end
 
+	if model:IsDescendantOf(char) then
+		return true
+	end
+
 	for _, inst in ipairs(model:GetDescendants()) do
-		if jointLinksModelToCharacter(inst, model, char) then
+		if jointLinksModelToCharacter(inst, model, char) or constraintLinksModelToCharacter(inst, model, char) then
 			return true
 		end
 	end
 
 	for _, inst in ipairs(char:GetDescendants()) do
-		if jointLinksModelToCharacter(inst, model, char) then
+		if jointLinksModelToCharacter(inst, model, char) or constraintLinksModelToCharacter(inst, model, char) then
 			return true
 		end
 	end
@@ -287,49 +329,129 @@ local function hasLocalOwnerHint(inst: Instance): boolean
 	return false
 end
 
-local function shouldIncludeExtraAnimator(animator: Animator): boolean
-	if isInsideAnyPlayerCharacter(animator) then
-		return false
-	end
-
-	local model = getModel(animator)
+local function getRootPart(model: Model?): BasePart?
 	if not model then
+		return nil
+	end
+
+	return model.PrimaryPart
+		or model:FindFirstChild("HumanoidRootPart") :: BasePart?
+		or model:FindFirstChild("RootPart") :: BasePart?
+		or model:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function loosePropIsNearCharacter(model: Model?): boolean
+	local char = getCharacter()
+	if not char or not model then
 		return false
 	end
 
-	if modelIsJointLinkedToCharacter(model) then
-		return true
+	local charRoot = char:FindFirstChild("HumanoidRootPart") :: BasePart?
+	local propRoot = getRootPart(model)
+	if not charRoot or not propRoot then
+		return false
 	end
 
-	if hasLocalOwnerHint(animator) then
-		return true
+	return (charRoot.Position - propRoot.Position).Magnitude <= MAX_LOOSE_PROP_DISTANCE
+end
+
+local function hasRecentlyStartedTrack(animator: Animator): boolean
+	if currentPlayerEmoteStart <= 0 then
+		return false
+	end
+
+	for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+		if not isDefaultTrack(track) then
+			local key = getTrackKey(animator, track)
+			local started = firstSeenPlaying[key]
+
+			if started and math.abs(started - currentPlayerEmoteStart) <= EMOTE_WINDOW_SECONDS then
+				return true
+			end
+		end
 	end
 
 	return false
 end
 
-local function collectAnimators(): {{ label: string, animator: Animator }}
-	local found: {{ label: string, animator: Animator }} = {}
-	local seen: {[Animator]: boolean} = {}
-
-	local mainAnimator = getMainAnimator()
-	if mainAnimator then
-		seen[mainAnimator] = true
-
-		table.insert(found, {
-			label = "PLAYER",
-			animator = mainAnimator,
-		})
+local function shouldIncludeAnimator(animator: Animator): (boolean, string)
+	if isInsideOtherPlayerCharacter(animator) then
+		return false, "other-player"
 	end
 
-	for _, inst in ipairs(workspace:GetDescendants()) do
-		if inst:IsA("Animator") and not seen[inst] and shouldIncludeExtraAnimator(inst) then
-			seen[inst] = true
+	local mainAnimator = getMainAnimator()
+	if animator == mainAnimator then
+		return true, "player"
+	end
 
-			table.insert(found, {
-				label = getLabel(inst),
-				animator = inst,
-			})
+	if isInsideLocalCharacter(animator) then
+		return true, "inside-local-character"
+	end
+
+	local model = getModel(animator)
+	if modelIsLinkedToCharacter(model) then
+		return true, "linked"
+	end
+
+	if hasLocalOwnerHint(animator) then
+		return true, "owner-hint"
+	end
+
+	if loosePropIsNearCharacter(model) and hasRecentlyStartedTrack(animator) then
+		return true, "near-recent"
+	end
+
+	return false, "filtered"
+end
+
+local function updateTrackStartTimes()
+	for _, inst in ipairs(workspace:GetDescendants()) do
+		if inst:IsA("Animator") and not isInsideOtherPlayerCharacter(inst) then
+			for _, track in ipairs(inst:GetPlayingAnimationTracks()) do
+				if not isDefaultTrack(track) then
+					local key = getTrackKey(inst, track)
+					if not firstSeenPlaying[key] then
+						firstSeenPlaying[key] = os.clock()
+					end
+				end
+			end
+		end
+	end
+end
+
+local function updatePlayerEmoteStart()
+	local mainAnimator = getMainAnimator()
+	if not mainAnimator then
+		return
+	end
+
+	for _, track in ipairs(mainAnimator:GetPlayingAnimationTracks()) do
+		if not isDefaultTrack(track) then
+			local key = getTrackKey(mainAnimator, track)
+			local started = firstSeenPlaying[key]
+			if started and started > currentPlayerEmoteStart then
+				currentPlayerEmoteStart = started
+			end
+		end
+	end
+end
+
+local function collectAnimators(): {{ label: string, reason: string, animator: Animator }}
+	local found: {{ label: string, reason: string, animator: Animator }} = {}
+	local seen: {[Animator]: boolean} = {}
+
+	for _, inst in ipairs(workspace:GetDescendants()) do
+		if inst:IsA("Animator") and not seen[inst] then
+			local include, reason = shouldIncludeAnimator(inst)
+			if include then
+				seen[inst] = true
+
+				table.insert(found, {
+					label = getLabel(inst),
+					reason = reason,
+					animator = inst,
+				})
+			end
 		end
 	end
 
@@ -337,6 +459,9 @@ local function collectAnimators(): {{ label: string, animator: Animator }}
 end
 
 local function getPlayingRows(): {string}
+	updateTrackStartTimes()
+	updatePlayerEmoteStart()
+
 	local rows: {string} = {}
 
 	for _, info in ipairs(collectAnimators()) do
@@ -347,8 +472,9 @@ local function getPlayingRows(): {string}
 
 				if animId ~= "" and animId ~= "rbxassetid://0" then
 					table.insert(rows, string.format(
-						"[%s]\n%s | %s",
+						"[%s] (%s)\n%s | %s",
 						info.label,
+						info.reason,
 						animId,
 						track.Name or "track"
 					))
@@ -364,21 +490,24 @@ local function refresh()
 	local rows = getPlayingRows()
 
 	if #rows == 0 then
-		txt.Text = "No owned/joint-linked non-default animations playing.\n\nPlay an emote/dance/ability now."
+		txt.Text = "No local/prop non-default animations playing.\n\nStart the probe, then play the emote."
 	else
-		txt.Text = "OWNED / LINKED NON-DEFAULT ANIMATIONS:\n\n" .. table.concat(rows, "\n\n")
+		txt.Text = "LOCAL + PROP NON-DEFAULT ANIMATIONS:\n\n" .. table.concat(rows, "\n\n")
 	end
 end
 
 plr.CharacterAdded:Connect(function()
+	currentPlayerEmoteStart = 0
+	table.clear(firstSeenPlaying)
+
 	task.wait(2)
 	refresh()
 end)
 
 pcall(function()
 	StarterGui:SetCore("SendNotification", {
-		Title = "Strict Animation Probe",
-		Text = "Play an emote now",
+		Title = "Deep Emote Prop Probe",
+		Text = "Start this before playing the emote",
 		Duration = 4,
 	})
 end)
@@ -386,6 +515,6 @@ end)
 task.spawn(function()
 	while g.Parent do
 		refresh()
-		task.wait(0.5)
+		task.wait(0.35)
 	end
 end)
