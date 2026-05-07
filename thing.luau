@@ -1,3 +1,6 @@
+Yep, makes sense. The last one scanned **every Animator in Workspace**, so it caught other players too. This version ignores other players’ characters, keeps your own character, and only includes nearby/non-player objects that look related to you through ownership/name/proximity.
+
+```lua
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local StarterGui = game:GetService("StarterGui")
@@ -5,13 +8,13 @@ local StarterGui = game:GetService("StarterGui")
 local plr = Players.LocalPlayer
 local pg = plr:WaitForChild("PlayerGui")
 
-local old = pg:FindFirstChild("UNIVERSAL_EMOTE_PROBE")
+local old = pg:FindFirstChild("FOCUSED_EMOTE_PROBE")
 if old then
 	old:Destroy()
 end
 
 local g = Instance.new("ScreenGui")
-g.Name = "UNIVERSAL_EMOTE_PROBE"
+g.Name = "FOCUSED_EMOTE_PROBE"
 g.ResetOnSpawn = false
 g.Parent = pg
 
@@ -27,7 +30,7 @@ top.Parent = f
 top.Size = UDim2.new(1, 0, 0, 28)
 top.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 top.BorderSizePixel = 0
-top.Text = "UNIVERSAL ANIMATION PROBE - DRAG"
+top.Text = "FOCUSED ANIMATION PROBE - DRAG"
 top.Font = Enum.Font.Code
 top.TextSize = 16
 top.TextColor3 = Color3.new(1, 1, 1)
@@ -114,6 +117,23 @@ local DEFAULT_IDS = {
 	["rbxassetid://507776043"] = true,
 }
 
+local RELATED_NAME_HINTS = {
+	"clone",
+	"partner",
+	"stand",
+	"pet",
+	"buddy",
+	"companion",
+	"effect",
+	"emote",
+	"dance",
+	"prop",
+	"mount",
+	"vehicle",
+}
+
+local MAX_RELATED_DISTANCE = 35
+
 local function normalizeId(id: string): string
 	id = tostring(id)
 
@@ -147,8 +167,21 @@ local function isDefaultTrack(track: AnimationTrack): boolean
 	return false
 end
 
-local function getRootLabel(inst: Instance): string
-	local model = inst:FindFirstAncestorOfClass("Model")
+local function getCharacterRoot(): BasePart?
+	local char = plr.Character
+	if not char then
+		return nil
+	end
+
+	return char:FindFirstChild("HumanoidRootPart") :: BasePart?
+end
+
+local function getModel(inst: Instance): Model?
+	return inst:FindFirstAncestorOfClass("Model")
+end
+
+local function getLabel(inst: Instance): string
+	local model = getModel(inst)
 	if model then
 		return model:GetFullName()
 	end
@@ -156,31 +189,108 @@ local function getRootLabel(inst: Instance): string
 	return inst:GetFullName()
 end
 
+local function belongsToAnyOtherPlayer(model: Model?): boolean
+	if not model then
+		return false
+	end
+
+	local owner = Players:GetPlayerFromCharacter(model)
+	return owner ~= nil and owner ~= plr
+end
+
+local function nameLooksRelated(inst: Instance): boolean
+	local node: Instance? = inst
+
+	while node and node ~= workspace do
+		local lowerName = string.lower(node.Name)
+
+		if string.find(lowerName, string.lower(plr.Name), 1, true) or string.find(lowerName, string.lower(plr.DisplayName), 1, true) then
+			return true
+		end
+
+		for _, hint in ipairs(RELATED_NAME_HINTS) do
+			if string.find(lowerName, hint, 1, true) then
+				return true
+			end
+		end
+
+		node = node.Parent
+	end
+
+	return false
+end
+
+local function modelHasMotorLinkedToCharacter(model: Model?): boolean
+	local char = plr.Character
+	if not char or not model then
+		return false
+	end
+
+	for _, inst in ipairs(model:GetDescendants()) do
+		if inst:IsA("Motor6D") or inst:IsA("Weld") or inst:IsA("WeldConstraint") then
+			local part0 = inst.Part0
+			local part1 = inst.Part1
+
+			if part0 and part0:IsDescendantOf(char) then
+				return true
+			end
+
+			if part1 and part1:IsDescendantOf(char) then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+local function modelIsNearCharacter(model: Model?): boolean
+	local root = getCharacterRoot()
+	if not root or not model then
+		return false
+	end
+
+	local pivot = model:GetPivot()
+	return (pivot.Position - root.Position).Magnitude <= MAX_RELATED_DISTANCE
+end
+
+local function isRelatedAnimator(animator: Animator): boolean
+	local model = getModel(animator)
+
+	if belongsToAnyOtherPlayer(model) then
+		return false
+	end
+
+	local char = plr.Character
+	if char and animator:IsDescendantOf(char) then
+		return true
+	end
+
+	if modelHasMotorLinkedToCharacter(model) then
+		return true
+	end
+
+	if nameLooksRelated(animator) then
+		return true
+	end
+
+	if modelIsNearCharacter(model) then
+		return true
+	end
+
+	return false
+end
+
 local function collectAnimators(): {{ label: string, animator: Animator }}
 	local found: {{ label: string, animator: Animator }} = {}
 	local seen: {[Animator]: boolean} = {}
 
-	local char = plr.Character
-	if char then
-		local humanoid = char:FindFirstChildOfClass("Humanoid")
-		local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
-
-		if animator then
-			seen[animator] = true
-
-			table.insert(found, {
-				label = "PLAYER",
-				animator = animator,
-			})
-		end
-	end
-
 	for _, inst in ipairs(workspace:GetDescendants()) do
-		if inst:IsA("Animator") and not seen[inst] then
+		if inst:IsA("Animator") and not seen[inst] and isRelatedAnimator(inst) then
 			seen[inst] = true
 
 			table.insert(found, {
-				label = getRootLabel(inst),
+				label = getLabel(inst),
 				animator = inst,
 			})
 		end
@@ -207,7 +317,7 @@ local function getPlayingRows(): {string}
 					)
 
 					table.insert(rows, row)
-					print("animation probe", row)
+					print("focused animation probe", row)
 				end
 			end
 		end
@@ -220,9 +330,9 @@ local function refresh()
 	local rows = getPlayingRows()
 
 	if #rows == 0 then
-		txt.Text = "No non-default animations playing.\n\nPlay an emote/dance/ability now."
+		txt.Text = "No related non-default animations playing.\n\nPlay an emote/dance/ability now."
 	else
-		txt.Text = "NON-DEFAULT PLAYING ANIMATIONS:\n\n" .. table.concat(rows, "\n\n")
+		txt.Text = "RELATED NON-DEFAULT ANIMATIONS:\n\n" .. table.concat(rows, "\n\n")
 	end
 end
 
@@ -233,7 +343,7 @@ end)
 
 pcall(function()
 	StarterGui:SetCore("SendNotification", {
-		Title = "Animation Probe",
+		Title = "Focused Animation Probe",
 		Text = "Play an emote now",
 		Duration = 4,
 	})
