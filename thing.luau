@@ -148,6 +148,9 @@ local captured: {[string]: {
 	lastSeen: number,
 	round: number,
 }} = {}
+local earlyTrackIds: {[AnimationTrack]: string} = {}
+local earlyTrackTimes: {[AnimationTrack]: number} = {}
+local animatorConnections: {[Animator]: RBXScriptConnection} = {}
 
 local function normalizeId(id: string): string
 	local numeric = string.match(tostring(id), "%d+")
@@ -187,7 +190,10 @@ end
 
 local function trackKey(animator: Animator, track: AnimationTrack): string
 	local anim = track.Animation
-	local id = anim and normalizeId(anim.AnimationId or "") or "noid"
+	local visibleId = anim and normalizeId(anim.AnimationId or "") or "noid"
+	local attrId = anim and anim:GetAttribute("OriginalAnimationId")
+	local id = earlyTrackIds[track] or (typeof(attrId) == "string" and normalizeId(attrId)) or visibleId
+
 	return animator:GetDebugId(0) .. "|" .. id .. "|" .. tostring(track.Name)
 end
 
@@ -382,6 +388,58 @@ local function hasOwnerHint(inst: Instance): boolean
 	return false
 end
 
+local function captureTrackEarly(track: AnimationTrack)
+	local anim = track.Animation
+	if not anim then
+		return
+	end
+
+	local id = normalizeId(anim.AnimationId or "")
+	if id ~= "" and id ~= "rbxassetid://0" and not string.find(id, "warning", 1, true) then
+		earlyTrackIds[track] = id
+		earlyTrackTimes[track] = os.clock()
+	end
+end
+
+local function watchAnimator(animator: Animator)
+	if animatorConnections[animator] then
+		return
+	end
+
+	animatorConnections[animator] = animator.AnimationPlayed:Connect(function(track)
+		captureTrackEarly(track)
+	end)
+
+	animator.AncestryChanged:Connect(function(_, parent)
+		if not parent and animatorConnections[animator] then
+			animatorConnections[animator]:Disconnect()
+			animatorConnections[animator] = nil
+		end
+	end)
+
+	for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+		captureTrackEarly(track)
+	end
+end
+
+local function watchAllAnimators()
+	for _, inst in ipairs(game:GetDescendants()) do
+		if inst:IsA("Animator") and not isInsideOtherPlayer(inst) then
+			watchAnimator(inst)
+		end
+	end
+end
+
+game.DescendantAdded:Connect(function(inst)
+	if inst:IsA("Animator") then
+		task.defer(function()
+			if inst.Parent and not isInsideOtherPlayer(inst) then
+				watchAnimator(inst)
+			end
+		end)
+	end
+end)
+
 local function scanAnimators(): {Animator}
 	local out: {Animator} = {}
 
@@ -439,7 +497,9 @@ local function scan()
 		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
 			if not isDefaultTrack(track) then
 				local anim = track.Animation
-				local id = anim and normalizeId(anim.AnimationId or "") or ""
+				local visibleId = anim and normalizeId(anim.AnimationId or "") or ""
+				local attrId = anim and anim:GetAttribute("OriginalAnimationId")
+				local id = earlyTrackIds[track] or (typeof(attrId) == "string" and normalizeId(attrId)) or visibleId
 
 				if id ~= "" and id ~= "rbxassetid://0" then
 					local key = trackKey(animator, track)
@@ -480,6 +540,7 @@ end
 
 local function takeBaseline()
 	table.clear(baseline)
+	watchAllAnimators()
 
 	for _, animator in ipairs(scanAnimators()) do
 		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
@@ -578,6 +639,7 @@ plr.CharacterAdded:Connect(function()
 	refresh()
 end)
 
+watchAllAnimators()
 takeBaseline()
 
 pcall(function()
