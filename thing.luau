@@ -35,16 +35,16 @@ top.TextSize = 16
 top.TextColor3 = Color3.new(1, 1, 1)
 top.AutoButtonColor = false
 
-local selectAll = Instance.new("TextButton")
-selectAll.Parent = f
-selectAll.Position = UDim2.new(1, -160, 0, 0)
-selectAll.Size = UDim2.new(0, 78, 0, 28)
-selectAll.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
-selectAll.BorderSizePixel = 0
-selectAll.Text = "SELECT"
-selectAll.Font = Enum.Font.Code
-selectAll.TextSize = 16
-selectAll.TextColor3 = Color3.new(1, 1, 1)
+local liveToggle = Instance.new("TextButton")
+liveToggle.Parent = f
+liveToggle.Position = UDim2.new(1, -160, 0, 0)
+liveToggle.Size = UDim2.new(0, 78, 0, 28)
+liveToggle.BackgroundColor3 = Color3.fromRGB(35, 95, 55)
+liveToggle.BorderSizePixel = 0
+liveToggle.Text = "LIVE"
+liveToggle.Font = Enum.Font.Code
+liveToggle.TextSize = 16
+liveToggle.TextColor3 = Color3.new(1, 1, 1)
 
 local arm = Instance.new("TextButton")
 arm.Parent = f
@@ -112,6 +112,16 @@ local outputLocked = false
 local pendingOutputText: string? = nil
 local renderedOutputText = txt.Text
 
+local function updateLiveToggle()
+	if outputLocked then
+		liveToggle.Text = "PAUSED"
+		liveToggle.BackgroundColor3 = Color3.fromRGB(115, 75, 35)
+	else
+		liveToggle.Text = "LIVE"
+		liveToggle.BackgroundColor3 = Color3.fromRGB(35, 95, 55)
+	end
+end
+
 local function isOutputInput(input: InputObject): boolean
 	return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
 end
@@ -131,6 +141,15 @@ local function outputUpdatesPaused(): boolean
 end
 
 local setOutputText: (string) -> ()
+
+local function setOutputLocked(locked: boolean)
+	if outputLocked == locked then
+		return
+	end
+
+	outputLocked = locked
+	updateLiveToggle()
+end
 
 local function flushPendingOutput()
 	if pendingOutputText then
@@ -160,7 +179,7 @@ end
 
 txt.Focused:Connect(function()
 	outputFocused = true
-	outputLocked = true
+	setOutputLocked(true)
 	pendingOutputText = nil
 end)
 
@@ -174,10 +193,12 @@ end)
 
 UserInputService.InputBegan:Connect(function(input)
 	if isOutputInput(input) then
-		if isPointInside(f, Vector2.new(input.Position.X, input.Position.Y)) then
-			outputLocked = true
-		elseif outputLocked then
-			outputLocked = false
+		local inputPosition = Vector2.new(input.Position.X, input.Position.Y)
+
+		if isPointInside(scroller, inputPosition) then
+			setOutputLocked(true)
+		elseif outputLocked and not isPointInside(f, inputPosition) then
+			setOutputLocked(false)
 
 			if not outputFocused then
 				flushPendingOutput()
@@ -186,13 +207,17 @@ UserInputService.InputBegan:Connect(function(input)
 	end
 end)
 
-selectAll.MouseButton1Click:Connect(function()
-	pcall(function()
-		txt:CaptureFocus()
-		txt.SelectionStart = 1
-		txt.CursorPosition = #txt.Text + 1
-	end)
+liveToggle.MouseButton1Click:Connect(function()
+	if outputLocked then
+		outputFocused = false
+		setOutputLocked(false)
+		flushPendingOutput()
+	else
+		setOutputLocked(true)
+	end
 end)
+
+updateLiveToggle()
 
 txt:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateOutputCanvas)
 scroller:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateOutputCanvas)
@@ -898,7 +923,7 @@ local function takeBaseline()
 end
 
 arm.MouseButton1Click:Connect(function()
-	outputLocked = false
+	setOutputLocked(false)
 	outputFocused = false
 	flushPendingOutput()
 
