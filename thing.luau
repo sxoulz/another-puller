@@ -343,9 +343,14 @@ local DEFAULT_IDS = {
 
 local ARM_SECONDS = 10
 local NEAR_DISTANCE = 80
+local REFRESH_INTERVAL = 0.25
+local ARMED_CAMERA_SCAN_INTERVAL = 2
+local IDLE_CAMERA_SCAN_INTERVAL = 15
+local ANIMATOR_SWEEP_INTERVAL = 15
 
 local armedAt = 0
 local armRound = 0
+local lastCameraRigScan = 0
 local baseline: {[string]: boolean} = {}
 local captured: {[string]: {
 	row: string,
@@ -360,6 +365,7 @@ local captured: {[string]: {
 local earlyTrackIds: {[AnimationTrack]: string} = {}
 local earlyTrackTimes: {[AnimationTrack]: number} = {}
 local animatorConnections: {[Animator]: RBXScriptConnection} = {}
+local activeAnimators: {[Animator]: boolean} = {}
 local cameraFindings: {[string]: {
 	row: string,
 	firstSeen: number,
@@ -703,6 +709,7 @@ local function watchAnimator(animator: Animator)
 		return
 	end
 
+	activeAnimators[animator] = true
 	animatorConnections[animator] = animator.AnimationPlayed:Connect(function(track)
 		captureTrackEarly(track)
 	end)
@@ -711,6 +718,7 @@ local function watchAnimator(animator: Animator)
 		if not parent and animatorConnections[animator] then
 			animatorConnections[animator]:Disconnect()
 			animatorConnections[animator] = nil
+			activeAnimators[animator] = nil
 		end
 	end)
 
@@ -742,9 +750,11 @@ end)
 local function scanAnimators(): {Animator}
 	local out: {Animator} = {}
 
-	for _, inst in ipairs(game:GetDescendants()) do
-		if inst:IsA("Animator") and not isInsideOtherPlayer(inst) then
-			table.insert(out, inst)
+	for animator in pairs(activeAnimators) do
+		if animator.Parent and not isInsideOtherPlayer(animator) then
+			table.insert(out, animator)
+		else
+			activeAnimators[animator] = nil
 		end
 	end
 
@@ -954,6 +964,8 @@ arm.MouseButton1Click:Connect(function()
 	table.clear(captured)
 	table.clear(cameraFindings)
 	takeBaseline()
+	scanCameraRig()
+	lastCameraRigScan = os.clock()
 
 	arm.Text = "ARMED"
 	arm.BackgroundColor3 = Color3.fromRGB(40, 110, 60)
@@ -1028,8 +1040,11 @@ local function buildRows()
 	return lines
 end
 
-local function refresh()
-	scanCameraRig()
+local function refresh(includeCameraRigScan: boolean?)
+	if includeCameraRigScan then
+		scanCameraRig()
+	end
+
 	scan()
 
 	if armedAt > 0 and os.clock() - armedAt > ARM_SECONDS then
@@ -1054,7 +1069,7 @@ plr.CharacterAdded:Connect(function()
 
 	task.wait(1)
 	takeBaseline()
-	refresh()
+	refresh(true)
 end)
 
 watchAllAnimators()
@@ -1069,8 +1084,27 @@ pcall(function()
 end)
 
 task.spawn(function()
+	local lastAnimatorSweep = 0
+
 	while g.Parent do
-		refresh()
-		task.wait(0.2)
+		local now = os.clock()
+
+		if now - lastAnimatorSweep >= ANIMATOR_SWEEP_INTERVAL then
+			lastAnimatorSweep = now
+			watchAllAnimators()
+		end
+
+		local cameraScanInterval = IDLE_CAMERA_SCAN_INTERVAL
+		if armedAt > 0 and now - armedAt <= ARM_SECONDS then
+			cameraScanInterval = ARMED_CAMERA_SCAN_INTERVAL
+		end
+
+		local includeCameraRigScan = now - lastCameraRigScan >= cameraScanInterval
+		if includeCameraRigScan then
+			lastCameraRigScan = now
+		end
+
+		refresh(includeCameraRigScan)
+		task.wait(REFRESH_INTERVAL)
 	end
 end)
