@@ -68,6 +68,7 @@ scroller.ScrollingDirection = Enum.ScrollingDirection.Y
 scroller.CanvasSize = UDim2.fromOffset(0, 0)
 scroller.AutomaticCanvasSize = Enum.AutomaticSize.None
 scroller.Active = true
+scroller.ScrollingEnabled = false
 
 local txt = Instance.new("TextBox")
 txt.Parent = scroller
@@ -142,6 +143,13 @@ local function scrollOutputBy(deltaY: number)
 	local y = math.clamp(scroller.CanvasPosition.Y + deltaY, 0, maxY)
 
 	scroller.CanvasPosition = Vector2.new(0, y)
+end
+
+local function getWheelScrollAmount(input: InputObject): number
+	local visibleHeight = math.max(1, scroller.AbsoluteSize.Y)
+	local step = math.clamp(visibleHeight * 0.18, 48, 140)
+
+	return -input.Position.Z * step
 end
 
 local function outputUpdatesPaused(): boolean
@@ -269,7 +277,7 @@ UserInputService.InputChanged:Connect(function(input)
 		local inputPosition = UserInputService:GetMouseLocation()
 
 		if isPointInside(scroller, inputPosition) then
-			scrollOutputBy(-input.Position.Z * 56)
+			scrollOutputBy(getWheelScrollAmount(input))
 		end
 	end
 end)
