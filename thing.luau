@@ -67,6 +67,7 @@ scroller.ScrollBarThickness = 10
 scroller.ScrollingDirection = Enum.ScrollingDirection.Y
 scroller.CanvasSize = UDim2.fromOffset(0, 0)
 scroller.AutomaticCanvasSize = Enum.AutomaticSize.None
+scroller.Active = true
 
 local txt = Instance.new("TextBox")
 txt.Parent = scroller
@@ -134,6 +135,13 @@ local function isPointInside(gui: GuiObject, point: Vector2): boolean
 		and point.X <= position.X + size.X
 		and point.Y >= position.Y
 		and point.Y <= position.Y + size.Y
+end
+
+local function scrollOutputBy(deltaY: number)
+	local maxY = math.max(0, scroller.CanvasSize.Y.Offset - scroller.AbsoluteSize.Y)
+	local y = math.clamp(scroller.CanvasPosition.Y + deltaY, 0, maxY)
+
+	scroller.CanvasPosition = Vector2.new(0, y)
 end
 
 local function outputUpdatesPaused(): boolean
@@ -257,6 +265,12 @@ UserInputService.InputChanged:Connect(function(input)
 			math.max(220, startSize.Y.Offset + d.Y)
 		)
 		updateOutputCanvas()
+	elseif input.UserInputType == Enum.UserInputType.MouseWheel then
+		local inputPosition = UserInputService:GetMouseLocation()
+
+		if isPointInside(scroller, inputPosition) then
+			scrollOutputBy(-input.Position.Z * 56)
+		end
 	end
 end)
 
