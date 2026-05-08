@@ -108,11 +108,32 @@ local function updateOutputCanvas()
 end
 
 local outputFocused = false
+local outputPointerDown = false
 local pendingOutputText: string? = nil
 local renderedOutputText = txt.Text
 
-local function setOutputText(text: string)
-	if outputFocused then
+local function isOutputInput(input: InputObject): boolean
+	return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
+end
+
+local function outputUpdatesPaused(): boolean
+	return outputFocused or outputPointerDown
+end
+
+local setOutputText: (string) -> ()
+
+local function flushPendingOutput()
+	if pendingOutputText then
+		local text = pendingOutputText
+		pendingOutputText = nil
+		setOutputText(text)
+	elseif txt.Text ~= renderedOutputText then
+		setOutputText(renderedOutputText)
+	end
+end
+
+setOutputText = function(text: string)
+	if outputUpdatesPaused() then
 		pendingOutputText = text
 		return
 	end
@@ -127,6 +148,15 @@ local function setOutputText(text: string)
 	updateOutputCanvas()
 end
 
+local function pauseOutputInteraction(input: InputObject)
+	if isOutputInput(input) then
+		outputPointerDown = true
+	end
+end
+
+scroller.InputBegan:Connect(pauseOutputInteraction)
+txt.InputBegan:Connect(pauseOutputInteraction)
+
 txt.Focused:Connect(function()
 	outputFocused = true
 	pendingOutputText = nil
@@ -134,13 +164,16 @@ end)
 
 txt.FocusLost:Connect(function()
 	outputFocused = false
+	flushPendingOutput()
+end)
 
-	if pendingOutputText then
-		local text = pendingOutputText
-		pendingOutputText = nil
-		setOutputText(text)
-	elseif txt.Text ~= renderedOutputText then
-		setOutputText(renderedOutputText)
+UserInputService.InputEnded:Connect(function(input)
+	if outputPointerDown and isOutputInput(input) then
+		outputPointerDown = false
+
+		if not outputFocused then
+			flushPendingOutput()
+		end
 	end
 end)
 
@@ -714,7 +747,7 @@ local function scanCameraRig()
 				if currentCamera and currentCamera.CameraType == Enum.CameraType.Scriptable then
 					local distance = (currentCamera.CFrame.Position - inst.CFrame.Position).Magnitude
 					if distance <= 3 then
-						bindInfo = string.format("CurrentCamera Scriptable, %.2f studs from this part", distance)
+						bindInfo = "CurrentCamera Scriptable, near this part"
 					end
 				end
 
