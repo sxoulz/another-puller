@@ -1,4 +1,5 @@
 local Players = game:GetService("Players")
+local TextService = game:GetService("TextService")
 local UserInputService = game:GetService("UserInputService")
 local StarterGui = game:GetService("StarterGui")
 local Workspace = game:GetService("Workspace")
@@ -25,7 +26,7 @@ f.BorderSizePixel = 0
 
 local top = Instance.new("TextButton")
 top.Parent = f
-top.Size = UDim2.new(1, -82, 0, 28)
+top.Size = UDim2.new(1, -164, 0, 28)
 top.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 top.BorderSizePixel = 0
 top.Text = "ORGANISED ARMED EMOTE PROBE - DRAG"
@@ -33,6 +34,17 @@ top.Font = Enum.Font.Code
 top.TextSize = 16
 top.TextColor3 = Color3.new(1, 1, 1)
 top.AutoButtonColor = false
+
+local selectAll = Instance.new("TextButton")
+selectAll.Parent = f
+selectAll.Position = UDim2.new(1, -160, 0, 0)
+selectAll.Size = UDim2.new(0, 78, 0, 28)
+selectAll.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+selectAll.BorderSizePixel = 0
+selectAll.Text = "SELECT"
+selectAll.Font = Enum.Font.Code
+selectAll.TextSize = 16
+selectAll.TextColor3 = Color3.new(1, 1, 1)
 
 local arm = Instance.new("TextButton")
 arm.Parent = f
@@ -45,15 +57,27 @@ arm.Font = Enum.Font.Code
 arm.TextSize = 16
 arm.TextColor3 = Color3.new(1, 1, 1)
 
+local scroller = Instance.new("ScrollingFrame")
+scroller.Parent = f
+scroller.Position = UDim2.new(0, 6, 0, 34)
+scroller.Size = UDim2.new(1, -12, 1, -40)
+scroller.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+scroller.BorderSizePixel = 0
+scroller.ScrollBarThickness = 10
+scroller.ScrollingDirection = Enum.ScrollingDirection.Y
+scroller.CanvasSize = UDim2.fromOffset(0, 0)
+scroller.AutomaticCanvasSize = Enum.AutomaticSize.None
+
 local txt = Instance.new("TextBox")
-txt.Parent = f
-txt.Position = UDim2.new(0, 6, 0, 34)
-txt.Size = UDim2.new(1, -12, 1, -40)
-txt.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+txt.Parent = scroller
+txt.Position = UDim2.fromOffset(8, 8)
+txt.Size = UDim2.new(1, -26, 0, 0)
+txt.AutomaticSize = Enum.AutomaticSize.Y
+txt.BackgroundTransparency = 1
 txt.BorderSizePixel = 0
 txt.ClearTextOnFocus = false
 txt.MultiLine = true
-txt.TextEditable = false
+txt.TextEditable = true
 txt.TextWrapped = true
 txt.Font = Enum.Font.Code
 txt.TextSize = 14
@@ -62,9 +86,55 @@ txt.TextXAlignment = Enum.TextXAlignment.Left
 txt.TextYAlignment = Enum.TextYAlignment.Top
 txt.Text = "Press ARM, then play the emote."
 
+local resizeGrip = Instance.new("TextButton")
+resizeGrip.Parent = f
+resizeGrip.AnchorPoint = Vector2.new(1, 1)
+resizeGrip.Position = UDim2.new(1, 0, 1, 0)
+resizeGrip.Size = UDim2.fromOffset(18, 18)
+resizeGrip.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+resizeGrip.BorderSizePixel = 0
+resizeGrip.Text = "+"
+resizeGrip.Font = Enum.Font.Code
+resizeGrip.TextSize = 14
+resizeGrip.TextColor3 = Color3.fromRGB(220, 220, 220)
+
+local function updateOutputCanvas()
+	local width = math.max(1, txt.AbsoluteSize.X)
+	local measured = TextService:GetTextSize(txt.Text, txt.TextSize, txt.Font, Vector2.new(width, math.huge))
+	local height = math.max(scroller.AbsoluteSize.Y, measured.Y + 20)
+
+	txt.Size = UDim2.new(1, -26, 0, height)
+	scroller.CanvasSize = UDim2.fromOffset(0, height + 16)
+end
+
+local function setOutputText(text: string)
+	if txt.Text == text then
+		updateOutputCanvas()
+		return
+	end
+
+	txt.Text = text
+	updateOutputCanvas()
+end
+
+selectAll.MouseButton1Click:Connect(function()
+	pcall(function()
+		txt:CaptureFocus()
+		txt.SelectionStart = 1
+		txt.CursorPosition = #txt.Text + 1
+	end)
+end)
+
+txt:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateOutputCanvas)
+scroller:GetPropertyChangedSignal("AbsoluteSize"):Connect(updateOutputCanvas)
+task.defer(updateOutputCanvas)
+
 local dragging = false
 local dragStart: Vector3? = nil
 local startPos: UDim2? = nil
+local resizing = false
+local resizeStart: Vector3? = nil
+local startSize: UDim2? = nil
 
 top.InputBegan:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -84,6 +154,29 @@ UserInputService.InputChanged:Connect(function(input)
 	if dragging and dragStart and startPos and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 		local d = input.Position - dragStart
 		f.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+	elseif resizing and resizeStart and startSize and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local d = input.Position - resizeStart
+		f.Size = UDim2.new(
+			startSize.X.Scale,
+			math.max(420, startSize.X.Offset + d.X),
+			startSize.Y.Scale,
+			math.max(220, startSize.Y.Offset + d.Y)
+		)
+		updateOutputCanvas()
+	end
+end)
+
+resizeGrip.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		resizing = true
+		resizeStart = input.Position
+		startSize = f.Size
+
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				resizing = false
+			end
+		end)
 	end
 end)
 
@@ -827,9 +920,9 @@ local function refresh()
 	local lines = buildRows()
 
 	if #lines == 0 then
-		txt.Text = "Press ARM, then play the emote.\n\nNew captures and camera rig evidence will appear separately."
+		setOutputText("Press ARM, then play the emote.\n\nNew captures and camera rig evidence will appear separately.")
 	else
-		txt.Text = "CAPTURED LOCAL / PROP ANIMATIONS + CAMERA RIG\n\n" .. table.concat(lines, "\n\n")
+		setOutputText("CAPTURED LOCAL / PROP ANIMATIONS + CAMERA RIG\n\n" .. table.concat(lines, "\n\n"))
 	end
 end
 
