@@ -18,17 +18,17 @@ g.Parent = pg
 
 local f = Instance.new("Frame")
 f.Parent = g
-f.Size = UDim2.new(0, 620, 0, 340)
-f.Position = UDim2.new(1, -640, 0, 90)
+f.Size = UDim2.new(0, 660, 0, 380)
+f.Position = UDim2.new(1, -680, 0, 80)
 f.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 f.BorderSizePixel = 0
 
 local top = Instance.new("TextButton")
 top.Parent = f
-top.Size = UDim2.new(1, -72, 0, 28)
+top.Size = UDim2.new(1, -82, 0, 28)
 top.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 top.BorderSizePixel = 0
-top.Text = "ARMED DEEP EMOTE PROBE - DRAG"
+top.Text = "ORGANISED ARMED EMOTE PROBE - DRAG"
 top.Font = Enum.Font.Code
 top.TextSize = 16
 top.TextColor3 = Color3.new(1, 1, 1)
@@ -36,8 +36,8 @@ top.AutoButtonColor = false
 
 local arm = Instance.new("TextButton")
 arm.Parent = f
-arm.Position = UDim2.new(1, -68, 0, 0)
-arm.Size = UDim2.new(0, 68, 0, 28)
+arm.Position = UDim2.new(1, -78, 0, 0)
+arm.Size = UDim2.new(0, 78, 0, 28)
 arm.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
 arm.BorderSizePixel = 0
 arm.Text = "ARM"
@@ -89,14 +89,22 @@ end)
 
 local DEFAULT_NAMES = {
 	idle = true,
+	idleanim = true,
 	walk = true,
+	walkanim = true,
 	run = true,
+	runanim = true,
 	jump = true,
+	jumpanim = true,
 	fall = true,
+	fallanim = true,
 	climb = true,
+	climbanim = true,
 	swim = true,
+	swimanim = true,
 	swimidle = true,
 	sit = true,
+	sitanim = true,
 	toolnone = true,
 	toolslash = true,
 	toollunge = true,
@@ -128,9 +136,18 @@ local ARM_SECONDS = 10
 local NEAR_DISTANCE = 80
 
 local armedAt = 0
+local armRound = 0
 local baseline: {[string]: boolean} = {}
-local firstSeen: {[string]: number} = {}
-local captured: {[string]: string} = {}
+local captured: {[string]: {
+	row: string,
+	id: string,
+	label: string,
+	reason: string,
+	trackName: string,
+	firstSeen: number,
+	lastSeen: number,
+	round: number,
+}} = {}
 
 local function normalizeId(id: string): string
 	local numeric = string.match(tostring(id), "%d+")
@@ -139,6 +156,10 @@ local function normalizeId(id: string): string
 	end
 
 	return string.lower(tostring(id))
+end
+
+local function compactName(name: string): string
+	return string.gsub(string.lower(name), "[%s_%-%./]", "")
 end
 
 local function getCharacter(): Model?
@@ -170,16 +191,27 @@ local function trackKey(animator: Animator, track: AnimationTrack): string
 	return animator:GetDebugId(0) .. "|" .. id .. "|" .. tostring(track.Name)
 end
 
-local function isDefaultTrack(track: AnimationTrack): boolean
-	local n = string.lower(track.Name or "")
+local function isDefaultName(name: string): boolean
+	local n = compactName(name)
+
 	if DEFAULT_NAMES[n] then
+		return true
+	end
+
+	return n == "walkanimation"
+		or n == "runanimation"
+		or n == "walking"
+		or n == "running"
+end
+
+local function isDefaultTrack(track: AnimationTrack): boolean
+	if isDefaultName(track.Name or "") then
 		return true
 	end
 
 	local anim = track.Animation
 	if anim then
-		local animName = string.lower(anim.Name or "")
-		if DEFAULT_NAMES[animName] then
+		if isDefaultName(anim.Name or "") then
 			return true
 		end
 
@@ -401,6 +433,8 @@ local function shouldCapture(animator: Animator, key: string): (boolean, string)
 end
 
 local function scan()
+	local now = os.clock()
+
 	for _, animator in ipairs(scanAnimators()) do
 		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
 			if not isDefaultTrack(track) then
@@ -409,16 +443,33 @@ local function scan()
 
 				if id ~= "" and id ~= "rbxassetid://0" then
 					local key = trackKey(animator, track)
-					firstSeen[key] = firstSeen[key] or os.clock()
-
 					local ok, reason = shouldCapture(animator, key)
+
 					if ok then
-						captured[key] = string.format(
+						local label = getLabel(animator)
+						local trackName = track.Name or "track"
+
+						if captured[key] then
+							captured[key].lastSeen = now
+						else
+							captured[key] = {
+								row = "",
+								id = id,
+								label = label,
+								reason = reason,
+								trackName = trackName,
+								firstSeen = now,
+								lastSeen = now,
+								round = armRound,
+							}
+						end
+
+						captured[key].row = string.format(
 							"[%s] (%s)\n%s | %s",
-							getLabel(animator),
+							label,
 							reason,
 							id,
-							track.Name or "track"
+							trackName
 						)
 					end
 				end
@@ -429,8 +480,6 @@ end
 
 local function takeBaseline()
 	table.clear(baseline)
-	table.clear(firstSeen)
-	table.clear(captured)
 
 	for _, animator in ipairs(scanAnimators()) do
 		for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
@@ -443,7 +492,10 @@ end
 
 arm.MouseButton1Click:Connect(function()
 	armedAt = os.clock()
+	armRound += 1
+	table.clear(captured)
 	takeBaseline()
+
 	arm.Text = "ARMED"
 	arm.BackgroundColor3 = Color3.fromRGB(40, 110, 60)
 
@@ -456,6 +508,49 @@ arm.MouseButton1Click:Connect(function()
 	end)
 end)
 
+local function sortNewestFirst(a, b)
+	return a.firstSeen > b.firstSeen
+end
+
+local function buildRows()
+	local newRows = {}
+	local oldRows = {}
+	local now = os.clock()
+
+	for _, item in pairs(captured) do
+		if item.round == armRound and item.firstSeen >= armedAt then
+			table.insert(newRows, item)
+		else
+			table.insert(oldRows, item)
+		end
+	end
+
+	table.sort(newRows, sortNewestFirst)
+	table.sort(oldRows, sortNewestFirst)
+
+	local lines = {}
+
+	if #newRows > 0 then
+		table.insert(lines, "=== NEW THIS ARM ===")
+		for _, item in ipairs(newRows) do
+			table.insert(lines, string.format("+ %.1fs ago\n%s", now - item.firstSeen, item.row))
+		end
+	end
+
+	if #oldRows > 0 then
+		if #lines > 0 then
+			table.insert(lines, "")
+		end
+
+		table.insert(lines, "=== STILL PLAYING / PREVIOUSLY CAPTURED ===")
+		for _, item in ipairs(oldRows) do
+			table.insert(lines, string.format("~ last seen %.1fs ago\n%s", now - item.lastSeen, item.row))
+		end
+	end
+
+	return lines
+end
+
 local function refresh()
 	scan()
 
@@ -464,22 +559,20 @@ local function refresh()
 		arm.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
 	end
 
-	local rows = {}
-	for _, row in pairs(captured) do
-		table.insert(rows, row)
-	end
+	local lines = buildRows()
 
-	table.sort(rows)
-
-	if #rows == 0 then
-		txt.Text = "Press ARM, then play the emote.\n\nThis version scans Workspace, PlayerGui, CurrentCamera, WorldModels, local character props, and linked props."
+	if #lines == 0 then
+		txt.Text = "Press ARM, then play the emote.\n\nNew captures will appear separately from old/still-playing captures."
 	else
-		txt.Text = "CAPTURED LOCAL / PROP ANIMATIONS:\n\n" .. table.concat(rows, "\n\n")
+		txt.Text = "CAPTURED LOCAL / PROP ANIMATIONS\n\n" .. table.concat(lines, "\n\n")
 	end
 end
 
 plr.CharacterAdded:Connect(function()
 	armedAt = 0
+	armRound += 1
+	table.clear(captured)
+
 	task.wait(1)
 	takeBaseline()
 	refresh()
@@ -489,7 +582,7 @@ takeBaseline()
 
 pcall(function()
 	StarterGui:SetCore("SendNotification", {
-		Title = "Armed Deep Probe",
+		Title = "Organised Probe",
 		Text = "Press ARM before playing the emote",
 		Duration = 4,
 	})
