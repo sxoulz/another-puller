@@ -108,7 +108,7 @@ local function updateOutputCanvas()
 end
 
 local outputFocused = false
-local outputPointerDown = false
+local outputLocked = false
 local pendingOutputText: string? = nil
 local renderedOutputText = txt.Text
 
@@ -116,8 +116,18 @@ local function isOutputInput(input: InputObject): boolean
 	return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
 end
 
+local function isPointInside(gui: GuiObject, point: Vector2): boolean
+	local position = gui.AbsolutePosition
+	local size = gui.AbsoluteSize
+
+	return point.X >= position.X
+		and point.X <= position.X + size.X
+		and point.Y >= position.Y
+		and point.Y <= position.Y + size.Y
+end
+
 local function outputUpdatesPaused(): boolean
-	return outputFocused or outputPointerDown
+	return outputFocused or outputLocked
 end
 
 local setOutputText: (string) -> ()
@@ -148,31 +158,30 @@ setOutputText = function(text: string)
 	updateOutputCanvas()
 end
 
-local function pauseOutputInteraction(input: InputObject)
-	if isOutputInput(input) then
-		outputPointerDown = true
-	end
-end
-
-scroller.InputBegan:Connect(pauseOutputInteraction)
-txt.InputBegan:Connect(pauseOutputInteraction)
-
 txt.Focused:Connect(function()
 	outputFocused = true
+	outputLocked = true
 	pendingOutputText = nil
 end)
 
 txt.FocusLost:Connect(function()
 	outputFocused = false
-	flushPendingOutput()
+
+	if not outputLocked then
+		flushPendingOutput()
+	end
 end)
 
-UserInputService.InputEnded:Connect(function(input)
-	if outputPointerDown and isOutputInput(input) then
-		outputPointerDown = false
+UserInputService.InputBegan:Connect(function(input)
+	if isOutputInput(input) then
+		if isPointInside(f, Vector2.new(input.Position.X, input.Position.Y)) then
+			outputLocked = true
+		elseif outputLocked then
+			outputLocked = false
 
-		if not outputFocused then
-			flushPendingOutput()
+			if not outputFocused then
+				flushPendingOutput()
+			end
 		end
 	end
 end)
@@ -889,6 +898,10 @@ local function takeBaseline()
 end
 
 arm.MouseButton1Click:Connect(function()
+	outputLocked = false
+	outputFocused = false
+	flushPendingOutput()
+
 	armedAt = os.clock()
 	armRound += 1
 	table.clear(captured)
