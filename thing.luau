@@ -343,14 +343,18 @@ local DEFAULT_IDS = {
 
 local ARM_SECONDS = 10
 local NEAR_DISTANCE = 80
-local REFRESH_INTERVAL = 0.25
+local REFRESH_INTERVAL = 0.5
+local ARMED_SCAN_INTERVAL = 0.5
+local IDLE_SCAN_INTERVAL = 2
+local CLASSIFICATION_CACHE_SECONDS = 3
 local ARMED_CAMERA_SCAN_INTERVAL = 2
-local IDLE_CAMERA_SCAN_INTERVAL = 15
-local ANIMATOR_SWEEP_INTERVAL = 15
+local IDLE_CAMERA_SCAN_INTERVAL = 30
+local ANIMATOR_SWEEP_INTERVAL = 30
 
 local armedAt = 0
 local armRound = 0
 local lastCameraRigScan = 0
+local lastAnimationScan = 0
 local baseline: {[string]: boolean} = {}
 local captured: {[string]: {
 	row: string,
@@ -366,6 +370,10 @@ local earlyTrackIds: {[AnimationTrack]: string} = {}
 local earlyTrackTimes: {[AnimationTrack]: number} = {}
 local animatorConnections: {[Animator]: RBXScriptConnection} = {}
 local activeAnimators: {[Animator]: boolean} = {}
+local animatorClassificationCache: {[Animator]: {
+	reason: string,
+	expiresAt: number,
+}} = {}
 local cameraFindings: {[string]: {
 	row: string,
 	firstSeen: number,
@@ -719,6 +727,7 @@ local function watchAnimator(animator: Animator)
 			animatorConnections[animator]:Disconnect()
 			animatorConnections[animator] = nil
 			activeAnimators[animator] = nil
+			animatorClassificationCache[animator] = nil
 		end
 	end)
 
@@ -761,27 +770,48 @@ local function scanAnimators(): {Animator}
 	return out
 end
 
-local function shouldCapture(animator: Animator, key: string): (boolean, string)
+local function getCachedCaptureReason(animator: Animator): string?
+	local now = os.clock()
+	local cached = animatorClassificationCache[animator]
+
+	if cached and cached.expiresAt > now then
+		return cached.reason ~= "filtered" and cached.reason or nil
+	end
+
 	local main = getMainAnimator()
+	local reason = "filtered"
+
 	if animator == main then
-		return true, "player"
+		reason = "player"
+	elseif isLocalContainer(animator) then
+		reason = "local-container"
+	else
+		local model = getModel(animator)
+
+		if modelLinkedToCharacter(model) then
+			reason = "linked"
+		elseif hasOwnerHint(animator) then
+			reason = "owner-hint"
+		end
 	end
 
-	local model = getModel(animator)
+	animatorClassificationCache[animator] = {
+		reason = reason,
+		expiresAt = now + CLASSIFICATION_CACHE_SECONDS,
+	}
 
-	if isLocalContainer(animator) then
-		return true, "local-container"
-	end
+	return reason ~= "filtered" and reason or nil
+end
 
-	if modelLinkedToCharacter(model) then
-		return true, "linked"
-	end
-
-	if hasOwnerHint(animator) then
-		return true, "owner-hint"
+local function shouldCapture(animator: Animator, key: string): (boolean, string)
+	local cachedReason = getCachedCaptureReason(animator)
+	if cachedReason then
+		return true, cachedReason
 	end
 
 	if armedAt > 0 and os.clock() - armedAt <= ARM_SECONDS and not baseline[key] then
+		local model = getModel(animator)
+
 		if modelNearCharacter(model) then
 			return true, "armed-near-new"
 		end
@@ -965,7 +995,9 @@ arm.MouseButton1Click:Connect(function()
 	table.clear(cameraFindings)
 	takeBaseline()
 	scanCameraRig()
+	scan()
 	lastCameraRigScan = os.clock()
+	lastAnimationScan = os.clock()
 
 	arm.Text = "ARMED"
 	arm.BackgroundColor3 = Color3.fromRGB(40, 110, 60)
@@ -1040,12 +1072,14 @@ local function buildRows()
 	return lines
 end
 
-local function refresh(includeCameraRigScan: boolean?)
+local function refresh(includeAnimationScan: boolean?, includeCameraRigScan: boolean?)
 	if includeCameraRigScan then
 		scanCameraRig()
 	end
 
-	scan()
+	if includeAnimationScan then
+		scan()
+	end
 
 	if armedAt > 0 and os.clock() - armedAt > ARM_SECONDS then
 		arm.Text = "ARM"
@@ -1069,7 +1103,7 @@ plr.CharacterAdded:Connect(function()
 
 	task.wait(1)
 	takeBaseline()
-	refresh(true)
+	refresh(true, true)
 end)
 
 watchAllAnimators()
@@ -1099,12 +1133,22 @@ task.spawn(function()
 			cameraScanInterval = ARMED_CAMERA_SCAN_INTERVAL
 		end
 
+		local scanInterval = IDLE_SCAN_INTERVAL
+		if armedAt > 0 and now - armedAt <= ARM_SECONDS then
+			scanInterval = ARMED_SCAN_INTERVAL
+		end
+
+		local includeAnimationScan = now - lastAnimationScan >= scanInterval
+		if includeAnimationScan then
+			lastAnimationScan = now
+		end
+
 		local includeCameraRigScan = now - lastCameraRigScan >= cameraScanInterval
 		if includeCameraRigScan then
 			lastCameraRigScan = now
 		end
 
-		refresh(includeCameraRigScan)
+		refresh(includeAnimationScan, includeCameraRigScan)
 		task.wait(REFRESH_INTERVAL)
 	end
 end)
