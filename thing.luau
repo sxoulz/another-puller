@@ -107,15 +107,42 @@ local function updateOutputCanvas()
 	scroller.CanvasSize = UDim2.fromOffset(0, height + 16)
 end
 
+local outputFocused = false
+local pendingOutputText: string? = nil
+local renderedOutputText = txt.Text
+
 local function setOutputText(text: string)
+	if outputFocused then
+		pendingOutputText = text
+		return
+	end
+
 	if txt.Text == text then
 		updateOutputCanvas()
 		return
 	end
 
 	txt.Text = text
+	renderedOutputText = text
 	updateOutputCanvas()
 end
+
+txt.Focused:Connect(function()
+	outputFocused = true
+	pendingOutputText = nil
+end)
+
+txt.FocusLost:Connect(function()
+	outputFocused = false
+
+	if pendingOutputText then
+		local text = pendingOutputText
+		pendingOutputText = nil
+		setOutputText(text)
+	elseif txt.Text ~= renderedOutputText then
+		setOutputText(renderedOutputText)
+	end
+end)
 
 selectAll.MouseButton1Click:Connect(function()
 	pcall(function()
