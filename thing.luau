@@ -151,6 +151,12 @@ local captured: {[string]: {
 local earlyTrackIds: {[AnimationTrack]: string} = {}
 local earlyTrackTimes: {[AnimationTrack]: number} = {}
 local animatorConnections: {[Animator]: RBXScriptConnection} = {}
+local cameraFindings: {[string]: {
+	row: string,
+	firstSeen: number,
+	lastSeen: number,
+	round: number,
+}} = {}
 
 local function normalizeId(id: string): string
 	local numeric = string.match(tostring(id), "%d+")
@@ -388,6 +394,75 @@ local function hasOwnerHint(inst: Instance): boolean
 	return false
 end
 
+local function addCameraFinding(key: string, row: string)
+	local now = os.clock()
+	local existing = cameraFindings[key]
+
+	if existing then
+		existing.lastSeen = now
+		existing.row = row
+	else
+		cameraFindings[key] = {
+			row = row,
+			firstSeen = now,
+			lastSeen = now,
+			round = armRound,
+		}
+	end
+end
+
+local function getCameraPartFrom(inst: Instance): BasePart?
+	local node: Instance? = inst
+
+	while node and node ~= game do
+		if node:IsA("BasePart") and node.Name == "Camera" then
+			return node
+		end
+
+		if node:IsA("Model") then
+			local cameraPart = node:FindFirstChild("Camera", true)
+			if cameraPart and cameraPart:IsA("BasePart") then
+				return cameraPart
+			end
+		end
+
+		node = node.Parent
+	end
+
+	return nil
+end
+
+local function describePart(part: BasePart?): string
+	return part and part:GetFullName() or "nil"
+end
+
+local function addCameraAnimationFinding(animation: Animation, source: string)
+	if isInsideOtherPlayer(animation) then
+		return
+	end
+
+	local id = normalizeId(animation.AnimationId or "")
+	if id == "" or id == "rbxassetid://0" or string.find(id, "warning", 1, true) then
+		return
+	end
+
+	local cameraPart = getCameraPartFrom(animation)
+	if not cameraPart and (source ~= "DescendantAdded" or armedAt <= 0 or os.clock() - armedAt > ARM_SECONDS) then
+		return
+	end
+
+	local cameraInfo = cameraPart and ("CameraPart=" .. cameraPart:GetFullName()) or "transient while armed; not under rig when observed"
+	local key = "animation-instance|" .. animation:GetDebugId(0) .. "|" .. id
+
+	addCameraFinding(key, string.format(
+		"[%s] Animation instance saw %s\n%s | %s",
+		source,
+		id,
+		animation:GetFullName(),
+		cameraInfo
+	))
+end
+
 local function captureTrackEarly(track: AnimationTrack)
 	local anim = track.Animation
 	if not anim then
@@ -398,6 +473,19 @@ local function captureTrackEarly(track: AnimationTrack)
 	if id ~= "" and id ~= "rbxassetid://0" and not string.find(id, "warning", 1, true) then
 		earlyTrackIds[track] = id
 		earlyTrackTimes[track] = os.clock()
+
+		local cameraPart = getCameraPartFrom(anim)
+		if cameraPart then
+			addCameraFinding(
+				"camera-track|" .. track:GetDebugId(0),
+				string.format(
+					"[AnimationPlayed] Camera rig track captured\n%s | %s\nCameraPart=%s",
+					id,
+					track.Name or "track",
+					cameraPart:GetFullName()
+				)
+			)
+		end
 	end
 end
 
@@ -437,6 +525,8 @@ game.DescendantAdded:Connect(function(inst)
 				watchAnimator(inst)
 			end
 		end)
+	elseif inst:IsA("Animation") then
+		addCameraAnimationFinding(inst, "DescendantAdded")
 	end
 end)
 
@@ -488,6 +578,100 @@ local function shouldCapture(animator: Animator, key: string): (boolean, string)
 	end
 
 	return false, "filtered"
+end
+
+local function scanCameraRig()
+	local currentCamera = Workspace.CurrentCamera
+
+	for _, inst in ipairs(game:GetDescendants()) do
+		if not isInsideOtherPlayer(inst) then
+			if inst:IsA("Animation") then
+				addCameraAnimationFinding(inst, "scan")
+			elseif inst:IsA("BasePart") and inst.Name == "Camera" then
+				local key = "camera-part|" .. inst:GetDebugId(0)
+				local bindInfo = "not matched to CurrentCamera"
+
+				if currentCamera and currentCamera.CameraType == Enum.CameraType.Scriptable then
+					local distance = (currentCamera.CFrame.Position - inst.CFrame.Position).Magnitude
+					if distance <= 3 then
+						bindInfo = string.format("CurrentCamera Scriptable, %.2f studs from this part", distance)
+					end
+				end
+
+				addCameraFinding(key, string.format(
+					"[Camera Part] %s\n%s",
+					inst:GetFullName(),
+					bindInfo
+				))
+			elseif inst:IsA("Motor6D") then
+				local part0 = inst.Part0
+				local part1 = inst.Part1
+
+				if (part0 and part0.Name == "Camera") or (part1 and part1.Name == "Camera") then
+					addCameraFinding(
+						"camera-joint|" .. inst:GetDebugId(0),
+						string.format(
+							"[Camera Motor6D] %s\nPart0=%s\nPart1=%s",
+							inst:GetFullName(),
+							describePart(part0),
+							describePart(part1)
+						)
+					)
+				end
+			elseif inst:IsA("Weld") or inst:IsA("WeldConstraint") then
+				local part0 = getPart((inst :: any).Part0)
+				local part1 = getPart((inst :: any).Part1)
+
+				if (part0 and part0.Name == "Camera") or (part1 and part1.Name == "Camera") then
+					addCameraFinding(
+						"camera-weld|" .. inst:GetDebugId(0),
+						string.format(
+							"[Camera %s] %s\nPart0=%s\nPart1=%s",
+							inst.ClassName,
+							inst:GetFullName(),
+							describePart(part0),
+							describePart(part1)
+						)
+					)
+				end
+			elseif inst:IsA("Constraint") then
+				local ok0, attachment0 = pcall(function()
+					return (inst :: any).Attachment0
+				end)
+				local ok1, attachment1 = pcall(function()
+					return (inst :: any).Attachment1
+				end)
+
+				if not ok0 then
+					attachment0 = nil
+				end
+
+				if not ok1 then
+					attachment1 = nil
+				end
+
+				local part0 = getPart(attachment0 and attachment0.Parent)
+				local part1 = getPart(attachment1 and attachment1.Parent)
+
+				if (part0 and part0.Name == "Camera") or (part1 and part1.Name == "Camera") then
+					addCameraFinding(
+						"camera-constraint|" .. inst:GetDebugId(0),
+						string.format(
+							"[Camera %s] %s\nAttachment0=%s\nAttachment1=%s",
+							inst.ClassName,
+							inst:GetFullName(),
+							attachment0 and attachment0:GetFullName() or "nil",
+							attachment1 and attachment1:GetFullName() or "nil"
+						)
+					)
+				end
+			elseif inst:IsA("Animator") and getCameraPartFrom(inst) then
+				for _, track in ipairs(inst:GetPlayingAnimationTracks()) do
+					captureTrackEarly(track)
+				end
+			end
+		end
+	end
 end
 
 local function scan()
@@ -555,6 +739,7 @@ arm.MouseButton1Click:Connect(function()
 	armedAt = os.clock()
 	armRound += 1
 	table.clear(captured)
+	table.clear(cameraFindings)
 	takeBaseline()
 
 	arm.Text = "ARMED"
@@ -609,10 +794,29 @@ local function buildRows()
 		end
 	end
 
+	local rigRows = {}
+	for _, item in pairs(cameraFindings) do
+		table.insert(rigRows, item)
+	end
+
+	table.sort(rigRows, sortNewestFirst)
+
+	if #rigRows > 0 then
+		if #lines > 0 then
+			table.insert(lines, "")
+		end
+
+		table.insert(lines, "=== CAMERA RIG EVIDENCE ===")
+		for _, item in ipairs(rigRows) do
+			table.insert(lines, string.format("* seen %.1fs ago\n%s", now - item.lastSeen, item.row))
+		end
+	end
+
 	return lines
 end
 
 local function refresh()
+	scanCameraRig()
 	scan()
 
 	if armedAt > 0 and os.clock() - armedAt > ARM_SECONDS then
@@ -623,9 +827,9 @@ local function refresh()
 	local lines = buildRows()
 
 	if #lines == 0 then
-		txt.Text = "Press ARM, then play the emote.\n\nNew captures will appear separately from old/still-playing captures."
+		txt.Text = "Press ARM, then play the emote.\n\nNew captures and camera rig evidence will appear separately."
 	else
-		txt.Text = "CAPTURED LOCAL / PROP ANIMATIONS\n\n" .. table.concat(lines, "\n\n")
+		txt.Text = "CAPTURED LOCAL / PROP ANIMATIONS + CAMERA RIG\n\n" .. table.concat(lines, "\n\n")
 	end
 end
 
@@ -633,6 +837,7 @@ plr.CharacterAdded:Connect(function()
 	armedAt = 0
 	armRound += 1
 	table.clear(captured)
+	table.clear(cameraFindings)
 
 	task.wait(1)
 	takeBaseline()
